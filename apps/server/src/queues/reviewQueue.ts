@@ -7,6 +7,6 @@ export const reviewQueue = new Queue('review-queue', {
     attempts: 3,
     backoff: { type: 'exponential', delay: 5000 },
     removeOnComplete: true,
-    removeOnFail: { count: 100 },
+    removeOnFail: { age: 3600, count: 100 },
   },
 });

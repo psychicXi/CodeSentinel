@@ -57,7 +57,12 @@ app.get('/', (req, res) => {
   });
 });
 
-app.post('/webhook', express.raw({ type: 'application/json' }), async (req, res) => {
+const captureWebhookStart: express.RequestHandler = (_req, res, next) => {
+  res.locals.webhookRequestStart = process.hrtime.bigint();
+  next();
+};
+
+app.post('/webhook', captureWebhookStart, express.raw({ type: 'application/json' }), async (req, res) => {
   if (!verifySignature(req)) {
     return res.status(401).send('Invalid signature');
   }
@@ -66,7 +71,9 @@ app.post('/webhook', express.raw({ type: 'application/json' }), async (req, res)
   const event = req.headers['x-github-event'];
 
   // Respond immediately — GitHub only cares that we received it
-  res.status(200).send('OK');
+  res.sendStatus(200);
+  const elapsedMs = Number(process.hrtime.bigint() - res.locals.webhookRequestStart) / 1_000_000;
+  console.log(`⏱️ Webhook acknowledged in ${elapsedMs.toFixed(2)}ms`);
 
   // Everything below runs AFTER the response is sent
   if (event !== 'pull_request') return;
@@ -150,7 +157,7 @@ app.post('/webhook', express.raw({ type: 'application/json' }), async (req, res)
 
     console.log(`🧠 Created ${aiBuckets.length} buckets. Sending to Queue...`);
 
-    for (const bucket of aiBuckets) {
+    for (const [chunkIndex, bucket] of aiBuckets.entries()) {
       const fileMatch = bucket.match(/--- File: (.*?) ---/);
       if (!fileMatch) {
         console.error(`❌ Could not extract filename from bucket, skipping enqueue`);
@@ -158,15 +165,28 @@ app.post('/webhook', express.raw({ type: 'application/json' }), async (req, res)
       }
       const fileName = fileMatch[1];
 
-      await reviewQueue.add('analyze-code', {
-        bucket,
-        installationId: installation.id,
-        pullNumber: pull_request.number,
-        owner: repository.owner.login,
-        repo: repository.name,
-        filePath: fileName,
-        placeholderCommentId
-      });
+      const jobId = [
+        'review',
+        Buffer.from(repository.owner.login).toString('hex'),
+        Buffer.from(repository.name).toString('hex'),
+        pull_request.number,
+        Buffer.from(pull_request.head.sha).toString('hex'),
+        chunkIndex,
+      ].join('-');
+
+      await reviewQueue.add(
+        'analyze-code',
+        {
+          bucket,
+          installationId: installation.id,
+          pullNumber: pull_request.number,
+          owner: repository.owner.login,
+          repo: repository.name,
+          filePath: fileName,
+          placeholderCommentId
+        },
+        { jobId, removeOnComplete: { age: 86400 } }
+      );
     }
 
     console.log(`🚀 Added ${aiBuckets.length} jobs to the queue.`);

@@ -1,6 +1,6 @@
 import { Worker } from 'bullmq';
 import redisOptions from '../config/redis.js';
-import { analyzeCode, type AIReview } from '../ai.js';
+import { AIAnalysisError, analyzeCode, type AIReview } from '../ai.js';
 import { App } from 'octokit';
 import dotenv from 'dotenv';
 
@@ -51,6 +51,8 @@ function isValidReview(r: any): r is AIReview {
 }
 
 function isNonRetryableError(err: unknown): boolean {
+  if (err instanceof AIAnalysisError) return false;
+
   return (
     typeof err === 'object' &&
     err !== null &&

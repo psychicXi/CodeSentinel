@@ -1,5 +1,6 @@
 import OpenAI from 'openai';
 import 'dotenv/config';
+import { z } from 'zod';
 
 let client: OpenAI | null = null;
 
@@ -26,6 +27,25 @@ export interface AIReview {
   severity: Severity;
   comment: string;
 }
+
+export class AIAnalysisError extends Error {
+  constructor(cause: unknown) {
+    super('AI analysis failed', { cause });
+    this.name = 'AIAnalysisError';
+  }
+}
+
+const AIReviewSchema = z.object({
+  file: z.string(),
+  line: z.number().int().positive(),
+  endLine: z.number().int().positive().optional(),
+  severity: z.enum(['CRITICAL', 'MEDIUM', 'LOW']),
+  comment: z.string(),
+});
+
+const AIResponseSchema = z.object({
+  reviews: z.array(z.unknown()),
+});
 
 export async function analyzeCode(diffChunk: string): Promise<AIReview[]> {
   const prompt = `
@@ -72,18 +92,31 @@ export async function analyzeCode(diffChunk: string): Promise<AIReview[]> {
       .replace(/```\s*$/i, '')
       .trim();
 
-    let parsed: { reviews?: unknown };
-    try {
-      parsed = JSON.parse(cleaned);
-    } catch (parseErr) {
-      console.error('🤖 Failed to parse AI JSON:', parseErr);
-      console.error('Raw content was:', raw.slice(0, 500));
-      return [];
+    const parsed: unknown = JSON.parse(cleaned);
+    const responseResult = AIResponseSchema.safeParse(parsed);
+    if (!responseResult.success) {
+      throw new Error('AI response must be an object containing a reviews array');
     }
 
-    return (Array.isArray(parsed.reviews) ? parsed.reviews : []) as AIReview[];
+    const reviews: AIReview[] = [];
+    let droppedCount = 0;
+
+    for (const review of responseResult.data.reviews) {
+      const reviewResult = AIReviewSchema.safeParse(review);
+      if (reviewResult.success) {
+        reviews.push(reviewResult.data);
+      } else {
+        droppedCount++;
+      }
+    }
+
+    if (droppedCount > 0) {
+      console.warn(`🤖 Dropped ${droppedCount} invalid AI review finding(s)`);
+    }
+
+    return reviews;
   } catch (error) {
-    console.error("🤖 AI Analysis Error:", error);
-    return [];
+    console.error('🤖 AI analysis failed; rethrowing for BullMQ retry:', error);
+    throw new AIAnalysisError(error);
   }
 }
